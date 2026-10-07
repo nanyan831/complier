@@ -1,0 +1,502 @@
+\documentclass[UTF8,a4paper,12pt]{ctexart}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\geometry{left=2.5cm,right=2.5cm,top=2.4cm,bottom=2.4cm}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.3em}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,columns=fullflexible,
+  frame=single,numbers=left,numberstyle=\tiny,showstringspaces=false,
+  keywordstyle=\color{blue!55!black},commentstyle=\color{green!35!black}}
+
+\title{预备工作实验报告\\了解编译器、LLVM IR 编程及 RISC-V 汇编编程}
+\author{姓名：\underline{\hspace{3.5cm}}\quad 学号：\underline{\hspace{3.5cm}}\\
+组员：\underline{\hspace{3.5cm}}\quad 班级：\underline{\hspace{3.5cm}}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本实验根据课程 PPT 中“了解编译器、LLVM IR 编程及汇编编程”的要求，以阶乘程序为统一实验对象。首先使用 GCC 和 Clang 分别生成预处理文件、LLVM IR、宿主机汇编、目标文件和最终可执行文件，并逐阶段分析源程序中的变量、循环、运算和函数调用如何被降低。随后手写与源程序等价的 LLVM IR，使用 SSA 形式和 \texttt{phi} 指令表示循环数据流；再选择 RISC-V 作为目标架构，手写 RV64 汇编主程序和只依赖 Linux 系统调用的最小 SysY 兼容运行时，经过汇编、链接后在 QEMU 中运行。进阶部分比较了 \texttt{-g}、\texttt{-O0}、\texttt{-O2} 和目标架构选项造成的中间代码差异，并使用边界输入和普通输入验证三种实现。实验结果表明，C、手写 LLVM IR 和手写 RISC-V 汇编在输入 0、1、5、7 时输出完全一致。
+\end{abstract}
+
+\noindent\textbf{关键词：} 编译过程；LLVM IR；SSA；RISC-V；SysY 运行时；交叉编译
+
+\section{实验任务与目标}
+
+课程 PPT 对本次预备工作的要求可以拆成以下五项。
+
+\begin{enumerate}
+  \item 以一个简单 C/C++ 程序为例，使用命令行选项得到预处理、编译、汇编和链接各阶段的输出，并分析中间产物与源程序的关系。
+  \item 设计一个包含编译器所支持语言特征的 SysY 示例程序。
+  \item 写出与示例程序语义等价的 LLVM IR 和 ARM 或 RISC-V 汇编程序，连接运行时并验证结果。
+  \item 通过调试选项、优化选项、目标架构选项或修改测试输入，进一步观察输出变化。
+  \item 使用课程 PPT 给出的论文模板和 LaTeX 资料完成 PDF 报告，并说明小组分工。
+\end{enumerate}
+
+本实验选择阶乘程序。它规模较小，但同时包含变量声明、赋值、输入输出函数调用、\texttt{while} 循环、关系运算、乘法和加法，适合在不同编译层次之间逐项对照。
+
+\section{实验环境、文件和分工}
+
+实验在 Linux x86-64 主机上完成。实际工具为 GCC 13.3.0、Clang/LLVM 18.1.3、RISC-V GNU Binutils 2.42 和 QEMU 8.2.2。查看版本的命令为：
+
+\begin{lstlisting}[language=bash]
+gcc --version
+clang --version
+riscv64-unknown-elf-as --version
+qemu-riscv64 --version
+\end{lstlisting}
+
+所有命令均在项目根目录执行。实验文件如下：
+
+\begin{lstlisting}
+src/factorial.sy                 SysY 风格源程序
+src/factorial.c                  供 GCC/Clang 使用的 C 版本
+src/sysy_runtime.h               getint/putint 函数声明
+src/sysy_runtime.c               宿主机运行时实现
+ir/factorial_manual.ll           手写 LLVM IR
+asm/factorial_riscv64.s          手写 RISC-V 主程序
+asm/sysy_runtime_riscv64.s       手写 RISC-V 运行时
+build/                           各阶段生成物和可执行文件
+\end{lstlisting}
+
+小组分工需要按实际情况填写，不能直接保留模板文字。建议写为：组员 A 负责 C/SysY 示例、GCC/Clang 编译阶段观察和结果记录；组员 B 负责手写 LLVM IR、RISC-V 汇编及运行时；两人共同完成测试、核对和报告修改。
+
+\section{实验总体路线}
+
+第一条路线用于理解现有编译器：
+
+\begin{lstlisting}
+C 源程序 -> 预处理文件 -> LLVM IR/汇编 -> 目标文件 -> 链接 -> x86-64 程序
+\end{lstlisting}
+
+第二、三条路线用于理解中间表示和目标代码：
+
+\begin{lstlisting}
+SysY 算法 -> 手写 LLVM IR -> 与 C 运行时链接 -> x86-64 程序
+SysY 算法 -> 手写 RISC-V 汇编 -> 与 RISC-V 运行时链接 -> RISC-V 程序
+\end{lstlisting}
+
+最后对三种实现运行同一组输入。输出相同，才能说明从高级语言、LLVM IR 到目标汇编的语义保持一致。
+
+\section{步骤一：设计 SysY/C 示例程序}
+
+\subsection{目的和做法}
+
+本步对应“选择简单程序”和“设计覆盖语言特征的 SysY 程序”。程序读取整数 $n$，先令 \texttt{i=2}、\texttt{f=1}；当 \texttt{i<=n} 时执行 \texttt{f=f*i} 和 \texttt{i=i+1}；循环结束后输出 \texttt{f}。
+
+文件 \path{src/factorial.sy} 的内容如下：
+
+\begin{lstlisting}[language=C]
+int main() {
+    int i;
+    int n;
+    int f;
+    n = getint();
+    i = 2;
+    f = 1;
+    while (i <= n) {
+        f = f * i;
+        i = i + 1;
+    }
+    putint(f);
+    return 0;
+}
+\end{lstlisting}
+
+其中 \texttt{int} 覆盖整型变量和返回值，\texttt{getint/putint} 覆盖函数调用，\texttt{while} 覆盖循环控制流，\texttt{<=} 覆盖关系运算，\texttt{*} 和 \texttt{+} 覆盖算术运算，赋值语句覆盖变量更新。
+
+\path{src/factorial.c} 与它的算法相同，只增加 \texttt{\#include "sysy\_runtime.h"}，并把主函数写成标准 C 形式 \texttt{int main(void)}，使 GCC 和 Clang 能检查输入输出函数声明。
+
+\subsection{本步结论}
+
+阶乘程序能用较少代码覆盖本实验需要观察的主要语言结构，而且每一种结构都能在 LLVM IR 和 RISC-V 指令中找到对应关系。
+
+\section{步骤二：准备输入输出运行时}
+
+SysY 使用的 \texttt{getint} 和 \texttt{putint} 不是 C 标准库函数。只编译主程序时可以生成目标文件，但链接器找不到它们的实现。因此在 \path{src/sysy_runtime.c} 中准备最小运行时：
+
+\begin{lstlisting}[language=C]
+int getint(void) {
+    int value = 0;
+    if (scanf("%d", &value) != 1) return 0;
+    return value;
+}
+
+void putint(int value) {
+    printf("%d\n", value);
+}
+\end{lstlisting}
+
+\texttt{getint} 从标准输入读取一个整数，读取失败时返回 0；\texttt{putint} 输出整数和换行。C 程序和手写 LLVM IR 都连接该文件，因此两者的输入输出条件一致。本步对应 SysY 示例中的运行时接口，也为链接实验准备跨文件符号。
+
+\section{步骤三：执行预处理并观察结果}
+
+\subsection{命令和参数}
+
+\begin{lstlisting}[language=bash]
+gcc -E -I src src/factorial.c -o build/factorial.i
+\end{lstlisting}
+
+\texttt{-E} 表示只做预处理；\texttt{-I src} 把 \path{src} 加入头文件搜索目录；最后的 \texttt{-o} 指定输出文件。检查命令为：
+
+\begin{lstlisting}[language=bash]
+wc -l build/factorial.i
+sed -n '1,40p' build/factorial.i
+\end{lstlisting}
+
+实际输出共 31 行。\texttt{\#include "sysy\_runtime.h"} 已经消失，原位置出现展开后的声明：
+
+\begin{lstlisting}[language=C]
+int getint(void);
+void putint(int value);
+\end{lstlisting}
+
+文件中还有 \texttt{\# 1 "src/factorial.c"} 等行标记，记录文本原来来自哪个文件和哪一行，便于后续错误定位。
+
+\subsection{本步结论}
+
+预处理器没有生成机器码，它主要完成头文件展开、宏替换和条件编译，输出仍是 C 文本。直接证据是 \texttt{\#include} 已消失，而声明和主函数仍可阅读。本步对应作业的“了解预处理器并获得阶段输出”。
+
+\section{步骤四：生成未优化 LLVM IR}
+
+\subsection{命令和参数}
+
+\begin{lstlisting}[language=bash]
+clang -S -emit-llvm -O0 -Xclang -disable-O0-optnone \
+  -I src src/factorial.c -o build/factorial_clang_O0.ll
+\end{lstlisting}
+
+\texttt{-S} 输出文本形式；\texttt{-emit-llvm} 指定输出 LLVM IR；\texttt{-O0} 关闭常规优化，便于逐句对照；\texttt{-Xclang -disable-O0-optnone} 不给函数添加阻止后续优化的属性。
+
+\subsection{变量和调用的对应}
+
+实际 IR 中有 4 个 \texttt{alloca}、6 个 \texttt{load} 和 6 个 \texttt{store}。未优化时局部变量通常在栈上分配，再通过加载和存储访问：
+
+\begin{lstlisting}
+%5 = call i32 @getint()
+store i32 %5, ptr %3, align 4   ; n = getint()
+store i32 2, ptr %2, align 4    ; i = 2
+store i32 1, ptr %4, align 4    ; f = 1
+\end{lstlisting}
+
+\texttt{call i32 @getint()} 调用返回 32 位整数的函数，结果为 \texttt{\%5}；\texttt{store} 再把结果写入代表 \texttt{n} 的栈地址。
+
+\subsection{循环的对应}
+
+\begin{lstlisting}
+%9 = icmp sle i32 %7, %8
+br i1 %9, label %10, label %16
+%13 = mul nsw i32 %11, %12
+store i32 %13, ptr %4, align 4
+%15 = add nsw i32 %14, 1
+store i32 %15, ptr %2, align 4
+br label %6
+\end{lstlisting}
+
+\texttt{icmp sle} 对两个有符号 32 位整数做“小于等于”比较；\texttt{br i1} 进入循环体或退出块；\texttt{mul} 对应 \texttt{f*i}；\texttt{add} 对应 \texttt{i+1}；最后的无条件分支回到条件块。
+
+\subsection{本步结论}
+
+LLVM IR 已把结构化 \texttt{while} 变成控制流图，但仍不绑定某种 CPU 指令。变量在未优化 IR 中主要表现为栈地址，表达式结果表现为只赋值一次的 SSA 临时值。本步对应作业的“观察编译器中间输出并分析与源程序的关系”。
+
+\section{步骤五：生成宿主机汇编}
+
+\begin{lstlisting}[language=bash]
+gcc -S -O0 -I src src/factorial.c -o build/factorial_gcc_O0.s
+\end{lstlisting}
+
+这里 \texttt{-S} 表示到汇编文本为止。未指定交叉目标，所以产物是 x86-64 汇编；它用于观察流程，最终手写目标仍选 RISC-V。关键部分为：
+
+\begin{lstlisting}
+call    getint@PLT
+movl    %eax, -4(%rbp)      # n
+movl    $2, -12(%rbp)       # i = 2
+movl    $1, -8(%rbp)        # f = 1
+.L3:
+movl    -8(%rbp), %eax
+imull   -12(%rbp), %eax     # f * i
+movl    %eax, -8(%rbp)
+addl    $1, -12(%rbp)       # i + 1
+.L2:
+movl    -12(%rbp), %eax
+cmpl    -4(%rbp), %eax
+jle     .L3
+\end{lstlisting}
+
+\texttt{eax} 保存整数返回值；\texttt{imull} 完成乘法；\texttt{cmpl} 设置条件码，\texttt{jle} 根据条件码回到循环体。同一个循环在 LLVM IR 中用 \texttt{icmp+br}，在 x86-64 中用 \texttt{cmp+jle}。这说明后端负责指令选择、寄存器使用、栈帧和跳转标签。
+
+\section{步骤六：生成目标文件并检查符号}
+
+\begin{lstlisting}[language=bash]
+gcc -c -O0 -I src src/factorial.c -o build/factorial.o
+file build/factorial.o
+nm -u build/factorial.o
+\end{lstlisting}
+
+\texttt{-c} 表示完成预处理、编译和汇编，但不链接。实际结果为：
+
+\begin{lstlisting}
+build/factorial.o: ELF 64-bit LSB relocatable, x86-64
+                 U getint
+                 U putint
+\end{lstlisting}
+
+\texttt{relocatable} 表示它是可重定位目标文件；字母 \texttt{U} 表示两个函数在当前文件中被使用但没有定义。目标文件保存机器码、符号表和重定位信息，等待链接器解析跨文件引用。本步对应“了解汇编器生成的目标文件”。
+
+\section{步骤七：链接并运行 C 版本}
+
+\begin{lstlisting}[language=bash]
+gcc -O0 src/factorial.c src/sysy_runtime.c -o build/factorial_c
+printf '5\n' | build/factorial_c
+\end{lstlisting}
+
+GCC 分别编译主程序和运行时，再调用链接器合并两部分。主程序中的 \texttt{getint/putint} 由运行时提供，运行时中的 \texttt{scanf/printf} 由系统 C 库提供。管道左侧模拟输入 5，实际输出为 120，与 $5!=120$ 相符。
+
+使用 \texttt{file build/factorial\_c} 可确认它是 x86-64 ELF 可执行文件，不再是可重定位目标文件。到这一步，预处理、编译、汇编和链接四个阶段已完整走通。本步对应“了解链接器并生成最终程序”。
+
+\section{步骤八：手写并运行 LLVM IR}
+
+\path{ir/factorial_manual.ll} 分为 \texttt{entry}、\texttt{cond}、\texttt{body}、\texttt{exit} 四个基本块：
+
+\begin{lstlisting}
+declare i32 @getint()
+declare void @putint(i32)
+define i32 @main() {
+entry:
+  %n = call i32 @getint()
+  br label %cond
+cond:
+  %i = phi i32 [ 2, %entry ], [ %next, %body ]
+  %f = phi i32 [ 1, %entry ], [ %prod, %body ]
+  %cmp = icmp sle i32 %i, %n
+  br i1 %cmp, label %body, label %exit
+body:
+  %prod = mul nsw i32 %f, %i
+  %next = add nsw i32 %i, 1
+  br label %cond
+exit:
+  call void @putint(i32 %f)
+  ret i32 0
+}
+\end{lstlisting}
+
+SSA 要求每个名字只定义一次，而 \texttt{i} 和 \texttt{f} 每轮都要更新。\texttt{phi} 根据控制流来源选值：第一次从 \texttt{entry} 到达时，\texttt{i=2,f=1}；以后从 \texttt{body} 返回时，取 \texttt{\%next} 和 \texttt{\%prod}。它表达的正是“上一轮结果进入下一轮”。
+
+编译、链接和运行命令为：
+
+\begin{lstlisting}[language=bash]
+clang ir/factorial_manual.ll src/sysy_runtime.c -o build/factorial_ir
+printf '5\n' | build/factorial_ir
+\end{lstlisting}
+
+Clang 把手写 IR 生成目标代码，C 运行时提供输入输出，再链接为 x86-64 程序。输出为 120，与 C 版本相同。本步直接对应“编写等价 LLVM IR 并验证”。
+
+\section{步骤九：自动生成 RISC-V 汇编作为参考}
+
+\begin{lstlisting}[language=bash]
+clang --target=riscv64-unknown-elf -S -O0 -I src \
+  src/factorial.c -o build/factorial_clang_riscv64_O0.s
+\end{lstlisting}
+
+\texttt{--target=riscv64-unknown-elf} 把目标从默认 x86-64 改为 64 位 RISC-V ELF。自动生成代码中的关键部分为：
+
+\begin{lstlisting}
+addi  sp, sp, -32
+sd    ra, 24(sp)
+sd    s0, 16(sp)
+call  getint
+sw    a0, -28(s0)       # n
+li    a0, 2
+sw    a0, -24(s0)       # i
+li    a0, 1
+sw    a0, -32(s0)       # f
+lw    a1, -24(s0)
+lw    a0, -28(s0)
+blt   a0, a1, .LBB0_3   # n < i 时退出
+\end{lstlisting}
+
+RISC-V 调用约定使用 \texttt{a0} 保存第一个参数和整数返回值；\texttt{sp} 是栈指针，\texttt{ra} 是返回地址，\texttt{s0} 在未优化代码中作为帧指针。源条件 \texttt{i<=n} 被改写为“若 \texttt{n<i} 则退出”，因此使用 \texttt{blt}。本步验证 LLVM 的多目标后端，并给手写版本提供调用约定参考。
+
+\section{步骤十：手写 RISC-V 阶乘主程序}
+
+手写程序把 \texttt{n} 放在 \texttt{s0}，把 \texttt{f} 放在 \texttt{s1}，把 \texttt{i} 放在 \texttt{t0}。\texttt{getint} 返回值从 \texttt{a0} 复制到 \texttt{s0}；调用 \texttt{putint} 前把 \texttt{s1} 复制到 \texttt{a0}。
+
+\begin{lstlisting}
+main:
+    addi sp, sp, -32
+    sd ra, 24(sp)        # 保存返回地址
+    sd s0, 16(sp)        # 保存被调用者保存寄存器
+    sd s1, 8(sp)
+    call getint
+    mv s0, a0            # n
+    li t0, 2             # i = 2
+    li s1, 1             # f = 1
+.Lcond:
+    bgt t0, s0, .Lexit   # i > n 时退出
+    mul s1, s1, t0       # f = f * i
+    addi t0, t0, 1       # i = i + 1
+    j .Lcond
+.Lexit:
+    mv a0, s1
+    call putint
+    li a0, 0
+    ld s1, 8(sp)
+    ld s0, 16(sp)
+    ld ra, 24(sp)
+    addi sp, sp, 32
+    ret
+\end{lstlisting}
+
+\texttt{s0/s1} 属于被调用者保存寄存器，因此进入时压栈、返回前恢复；\texttt{ra} 也必须保存，因为主函数还会调用其他函数。栈帧保持 16 字节对齐。\texttt{bgt} 和 \texttt{j} 是伪指令；\texttt{mul} 来自 RISC-V M 扩展。手写版本比 \texttt{-O0} 自动代码的栈访问少，但必须人工遵守调用约定。本步对应“RISC-V 汇编编程”。
+
+\section{步骤十一：连接 RISC-V 运行时并运行}
+
+\subsection{运行时做了什么}
+
+\path{asm/sysy_runtime_riscv64.s} 实现最小 SysY 兼容运行时。\texttt{\_start} 调用 \texttt{main}，随后用系统调用号 93 退出；\texttt{getint} 用系统调用号 63 从标准输入读取字符，再逐位转换十进制数；\texttt{putint} 反向生成数字和换行，再用系统调用号 64 写到标准输出。
+
+\subsection{汇编和链接}
+
+\begin{lstlisting}[language=bash]
+riscv64-unknown-elf-as -march=rv64gc -mabi=lp64 -mno-relax \
+  asm/factorial_riscv64.s -o build/factorial_riscv64.o
+riscv64-unknown-elf-as -march=rv64gc -mabi=lp64 -mno-relax \
+  asm/sysy_runtime_riscv64.s -o build/sysy_runtime_riscv64.o
+riscv64-unknown-elf-ld --no-relax \
+  build/factorial_riscv64.o build/sysy_runtime_riscv64.o \
+  -o build/factorial_riscv64
+\end{lstlisting}
+
+\texttt{-march=rv64gc} 指定 64 位通用 RISC-V 指令集；\texttt{-mabi=lp64} 指定 ABI；\texttt{-mno-relax/--no-relax} 禁用链接松弛，避免最小裸入口尚未初始化 \texttt{gp} 时产生依赖 \texttt{gp} 的地址访问。
+
+检查目标文件：
+
+\begin{lstlisting}[language=bash]
+file build/factorial_riscv64
+riscv64-unknown-elf-readelf -h build/factorial_riscv64
+\end{lstlisting}
+
+实际关键信息为：
+
+\begin{lstlisting}
+ELF 64-bit LSB executable, UCB RISC-V, statically linked
+Type: EXEC (Executable file)
+Machine: RISC-V
+Entry point address: 0x10120
+\end{lstlisting}
+
+运行命令为：
+
+\begin{lstlisting}[language=bash]
+printf '5\n' | qemu-riscv64 build/factorial_riscv64
+\end{lstlisting}
+
+实际输出 120。QEMU 在 x86-64 主机上解释执行 RISC-V 用户态指令。本步完成“汇编源文件 $\rightarrow$ 目标文件 $\rightarrow$ 连接运行时 $\rightarrow$ RISC-V ELF $\rightarrow$ 运行验证”。
+
+\section{步骤十二：进阶观察}
+
+\subsection{调试选项}
+
+\begin{lstlisting}[language=bash]
+clang -S -emit-llvm -g -O0 -Xclang -disable-O0-optnone \
+  -I src src/factorial.c -o build/factorial_clang_g_O0.ll
+\end{lstlisting}
+
+未加 \texttt{-g} 的 IR 为 58 行，加入后为 101 行。4 个 \texttt{alloca}、6 个 \texttt{load} 和 6 个 \texttt{store} 未改变，但新增 \texttt{!dbg}、\texttt{llvm.dbg.declare}、\texttt{DICompileUnit} 等元数据，把 IR 指令、源码行号和变量关联起来。说明 \texttt{-g} 主要增加调试信息，不改变计算语义。
+
+\subsection{优化选项}
+
+\begin{lstlisting}[language=bash]
+clang -S -emit-llvm -O2 -I src src/factorial.c \
+  -o build/factorial_clang_O2.ll
+\end{lstlisting}
+
+\texttt{-O0} 通过 \texttt{alloca/load/store} 访问变量；\texttt{-O2} 中这些指令消失，并出现 9 行 \texttt{phi} 相关代码。Clang 还把部分循环向量化，出现：
+
+\begin{lstlisting}
+%11 = phi <4 x i32> [ <i32 1, i32 1, i32 1, i32 1>, %6 ], [ %15, %9 ]
+%15 = mul <4 x i32> %11, %13
+%22 = tail call i32 @llvm.vector.reduce.mul.v4i32(<4 x i32> %21)
+\end{lstlisting}
+
+这说明优化器能删除不必要内存访问，并把多次标量乘法组织成向量运算。形式虽然改变，但可观察输出应保持不变。
+
+\subsection{目标架构和输入变化}
+
+默认 GCC 生成 x86-64 的 \texttt{movl/imull/cmpl/jle}；指定 RISC-V 后生成 \texttt{lw/sw/mulw/blt/j}。算法相同，但寄存器、调用约定和指令由目标架构决定。
+
+另外测试 0、1、5、7。0 和 1 验证循环一次都不执行时 \texttt{f=1} 是否正确，5 和 7 验证多轮循环。测试命令为：
+
+\begin{lstlisting}[language=bash]
+for n in 0 1 5 7; do
+  printf '%s\n' "$n" | build/factorial_c
+  printf '%s\n' "$n" | build/factorial_ir
+  printf '%s\n' "$n" | qemu-riscv64 build/factorial_riscv64
+done
+\end{lstlisting}
+
+本步对应 PPT 鼓励的调试、优化、目标选项和修改测试条件等进阶探索。
+
+\section{实验结果与分析}
+
+\begin{center}
+\begin{tabular}{ccccc}
+\toprule
+输入 $n$ & 期望值 & C 版本 & 手写 LLVM IR & 手写 RISC-V \\
+\midrule
+0 & 1 & 1 & 1 & 1 \\
+1 & 1 & 1 & 1 & 1 \\
+5 & 120 & 120 & 120 & 120 \\
+7 & 5040 & 5040 & 5040 & 5040 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+0 和 1 的结果证明循环入口判断正确；5 和 7 证明乘法、变量更新和回跳正确。C 与手写 IR 一致，说明 SSA 控制流正确；IR 与 RISC-V 一致，说明寄存器分配、分支方向和调用接口正确。本实验使用 32 位整数语义，没有用很大的 $n$ 做正确性测试，因为阶乘会发生整数溢出。
+
+\section{遇到的问题与处理}
+
+第一，只生成 \path{build/factorial.o} 时，\texttt{getint/putint} 仍是未定义符号，文件不能直接运行。增加运行时并执行链接后解决，这也说明了汇编器和链接器职责的区别。
+
+第二，默认 GCC 输出 x86-64，不能证明 RISC-V 代码正确。因此使用 Clang 目标三元组生成 RISC-V 参考汇编，再用 RISC-V GNU 工具链处理手写代码，通过 \texttt{readelf} 和 QEMU 验证目标架构及结果。
+
+第三，RISC-V 链接器可能把地址加载放松为相对 \texttt{gp} 的访问，但本实验的最小 \texttt{\_start} 没有 C 启动文件初始化 \texttt{gp}。因此汇编时使用 \texttt{-mno-relax}，链接时使用 \texttt{--no-relax}，运行时也声明 \texttt{.option norelax}。
+
+\section{每一步与作业要求的对应关系}
+
+\begin{enumerate}
+  \item \textbf{步骤一、二}对应“设计包含所支持语言特征的 SysY 示例程序”。证据是阶乘程序中的整数、赋值、循环、判断、运算、函数调用和 \texttt{getint/putint} 运行时接口。
+  \item \textbf{步骤三}对应“了解预处理器并获得预处理输出”。证据是 \texttt{gcc -E} 和 \path{build/factorial.i}。
+  \item \textbf{步骤四、五}对应“了解编译器并分析源程序到 IR、汇编的关系”。证据是未优化 LLVM IR、x86-64 汇编及逐句对照。
+  \item \textbf{步骤六}对应“了解汇编器和目标文件”。证据是 \path{build/factorial.o} 的 ELF 类型、未定义符号和可重定位状态。
+  \item \textbf{步骤七}对应“了解链接器并生成最终程序”。证据是主程序与 C 运行时链接，以及输入 5 输出 120。
+  \item \textbf{步骤八}对应“编写等价 LLVM IR 并验证”。证据是 \path{ir/factorial_manual.ll}、SSA/\texttt{phi} 分析和 \path{build/factorial_ir}。
+  \item \textbf{步骤九、十、十一}对应“ARM 或 RISC-V 任选其一，连接运行时并生成目标程序验证”。本实验选择 RISC-V，证据是自动参考汇编、手写汇编、手写运行时、RISC-V ELF 和 QEMU 输出。
+  \item \textbf{步骤十二}对应进阶要求。完成调试信息比较、\texttt{-O0/-O2} 比较、x86-64/RISC-V 目标比较和多输入测试。
+  \item \textbf{摘要、关键词、任务说明、实验过程、结果、结论、参考文献及分工}对应“按科技论文结构撰写 PDF 报告”。报告参考了 PPT 提供的 Overleaf 模板和 LaTeX 资料。
+\end{enumerate}
+
+\section{结论}
+
+本实验完整观察了预处理、编译、汇编和链接过程，并用真实中间文件解释各阶段职责。源程序的 \texttt{while} 在 LLVM IR 中变成基本块、比较和分支，在 RISC-V 中变成寄存器比较、条件分支和回跳；局部变量在未优化 IR 中通过内存读写表示，在手写 SSA IR 中通过 \texttt{phi} 合并控制流来源；函数调用则需要在链接阶段由运行时提供定义。
+
+在此基础上，本实验手写等价 LLVM IR、RISC-V 主程序和最小运行时，并通过交叉汇编、链接、ELF 检查和 QEMU 运行完成验证。四组测试中三种实现输出一致，说明转换保持了程序语义。对 \texttt{-g}、\texttt{-O0}、\texttt{-O2} 和目标架构选项的比较进一步说明：调试信息、优化和指令集选择会改变中间产物形式，但不应改变程序可观察行为。
+
+\begin{thebibliography}{9}
+\bibitem{course} 课程材料：《预备工作——了解你的编译器》PPT 与《上机大作业总体要求》文档。
+\bibitem{llvm-langref} LLVM Project. LLVM Language Reference Manual. \url{https://llvm.org/docs/LangRef.html}
+\bibitem{clang} LLVM Project. Clang Command Line Argument Reference. \url{https://clang.llvm.org/docs/ClangCommandLineReference.html}
+\bibitem{gcc} GNU Project. GCC Online Documentation. \url{https://gcc.gnu.org/onlinedocs/}
+\bibitem{riscv} RISC-V International. The RISC-V Instruction Set Manual. \url{https://riscv.org/technical/specifications/}
+\bibitem{overleaf-template} 课程 PPT 推荐报告模板：\url{https://www.overleaf.com/read/hnsjbjyknbdj}
+\bibitem{latex-intro} LaTeX 入门资料：\url{https://liam.page/2014/09/08/latex-introduction/}
+\bibitem{latex-symbols} LaTeX 命令与符号资料：\url{https://blog.csdn.net/garfielder007/article/details/51646604}
+\bibitem{latex-equation} LaTeX 数学公式资料：\url{https://yundongxiaoyang.top/wiki/latex-equation/}
+\end{thebibliography}
+
+\end{document}

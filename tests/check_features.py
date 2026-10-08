@@ -29,7 +29,6 @@ def main():
     directory = args.build.resolve() / "sysy"
     programs = [
         ("C-host", [str(directory / "features_c_host")]),
-        ("SysY-as-C-host", [str(directory / "features_sy_host")]),
         ("IR-host", [str(directory / "features_ir_host")]),
         ("C-RV", [args.qemu, str(directory / "features_c_riscv")]),
         ("IR-RV", [args.qemu, str(directory / "features_ir_riscv")]),

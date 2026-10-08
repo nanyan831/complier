@@ -9,18 +9,12 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("suite", choices=("baseline", "sysy-host", "sysy-riscv", "sysy"))
+    parser.add_argument("suite", choices=("sysy-host", "sysy-riscv", "sysy"))
     parser.add_argument("--build", type=Path, default=Path("build"))
     parser.add_argument("--qemu", default="qemu-riscv64")
     args = parser.parse_args()
     build = args.build.resolve()
     programs = []
-    if args.suite == "baseline":
-        programs = [
-            ("C", [str(build / "factorial_c")]),
-            ("IR", [str(build / "factorial_ir")]),
-            ("ASM-RV", [args.qemu, str(build / "factorial_riscv64")]),
-        ]
     if args.suite in ("sysy", "sysy-host"):
         programs.extend([
             ("C-host", [str(build / "sysy/factorial_c_host")]),
@@ -34,8 +28,7 @@ def main():
         ])
 
     cases = [(f"n{n}", f"{n}\n".encode(), math.factorial(n)) for n in range(13)]
-    if args.suite != "baseline":
-        cases.extend([("whitespace", b" \t5\n", 120), ("plus-sign", b"+5\n", 120)])
+    cases.extend([("whitespace", b" \t5\n", 120), ("plus-sign", b"+5\n", 120)])
     evidence = build / "test-results" / args.suite
     evidence.mkdir(parents=True, exist_ok=True)
     failures = 0
@@ -43,7 +36,7 @@ def main():
     with (evidence / "results.tsv").open("w", encoding="utf-8") as summary:
         summary.write("case\tprogram\texpected_bytes\tactual_bytes\texit_code\tstatus\n")
         for case, data, value in cases:
-            expected = str(value).encode() + (b"\n" if args.suite == "baseline" else b"")
+            expected = str(value).encode()
             for name, command in programs:
                 total += 1
                 prefix = evidence / f"{case}-{name}"

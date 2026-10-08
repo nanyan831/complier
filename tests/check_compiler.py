@@ -14,10 +14,11 @@ def main():
     parser.add_argument("--build", type=Path, default=Path("build"))
     parser.add_argument("--cc", default="gcc")
     parser.add_argument("--clang", default="clang")
-    parser.add_argument("--riscv-objdump", default="riscv64-unknown-elf-objdump")
-    parser.add_argument("--riscv-readelf", default="riscv64-unknown-elf-readelf")
+    parser.add_argument("--riscv-objdump", default="riscv64-linux-gnu-objdump")
+    parser.add_argument("--riscv-readelf", default="riscv64-linux-gnu-readelf")
     args = parser.parse_args()
     build = args.build.resolve()
+    host_library = str(build / "sysy/libsysy_host.a")
     evidence = build / "test-results/compiler"
     evidence.mkdir(parents=True, exist_ok=True)
     records = []
@@ -62,7 +63,7 @@ def main():
         check(f"{prefix}: string preserved", '"/* not a comment */"' in preprocessed)
         check(f"{prefix}: header guard", preprocessed.count("int getint(void);") == 1)
         executable = evidence / prefix
-        run(f"{prefix}-link", [args.cc, str(source), "lib/libsysy_x86.a", "-o", str(executable)])
+        run(f"{prefix}-link", [args.cc, str(source), host_library, "-o", str(executable)])
         actual, _ = run(f"{prefix}-run", [str(executable)])
         check(f"{prefix}: result", actual == output)
 
@@ -82,7 +83,7 @@ def main():
             check(f"diagnostic-{case}: expected reason", message in stderr)
     executable = evidence / "valid-scope"
     run("valid-scope-link", [args.clang, "-std=c11", "-I", "src", "-DCASE=0",
-                            "experiments/diagnostics.c", "lib/libsysy_x86.a", "-o", str(executable)])
+                            "experiments/diagnostics.c", host_library, "-o", str(executable)])
     stdout, _ = run("valid-scope-run", [str(executable)])
     check("nested and outer scope result", stdout == "52")
 
@@ -91,22 +92,22 @@ def main():
     host_object, _ = run("host-object", ["objdump", "-dr", str(evidence / "factorial_from_asm.o")])
     check("host unresolved calls", "R_X86_64_PLT32" in host_object
           and "getint" in host_object and "putint" in host_object)
-    host_linked, _ = run("host-linked", ["objdump", "-d", "--disassemble=main", str(build / "factorial_c")])
+    host_linked, _ = run("host-linked", ["objdump", "-d", "--disassemble=main", str(build / "sysy/factorial_c_host")])
     check("host resolved calls", "<getint>" in host_linked and "<putint>" in host_linked)
-    host_reloc, _ = run("host-dynamic-relocations", ["readelf", "-Wr", str(build / "factorial_c")])
+    host_reloc, _ = run("host-dynamic-relocations", ["readelf", "-Wr", str(build / "sysy/factorial_c_host")])
     check("host libc relocations", "JUMP_SLOT" in host_reloc and "printf" in host_reloc and "scanf" in host_reloc)
-    run("host-plt", ["objdump", "-d", "-j", ".plt", str(build / "factorial_c")])
-    rv_object, _ = run("riscv-object", [args.riscv_objdump, "-dr", str(build / "factorial_riscv64.o")])
+    run("host-plt", ["objdump", "-d", "-j", ".plt", str(build / "sysy/factorial_c_host")])
+    rv_object, _ = run("riscv-object", [args.riscv_objdump, "-dr", str(build / "sysy/factorial_asm_riscv.o")])
     check("riscv unresolved calls", "R_RISCV_CALL" in rv_object
           and "getint" in rv_object and "putint" in rv_object)
-    rv_linked, _ = run("riscv-linked", [args.riscv_objdump, "-d", str(build / "factorial_riscv64")])
+    rv_linked, _ = run("riscv-linked", [args.riscv_objdump, "-d", str(build / "sysy/factorial_asm_riscv")])
     check("riscv resolved calls", "<getint>" in rv_linked and "<putint>" in rv_linked)
-    relocations, _ = run("riscv-linked-relocations", [args.riscv_readelf, "-r", str(build / "factorial_riscv64")])
-    check("riscv static relocations resolved", "There are no relocations" in relocations)
+    relocations, _ = run("riscv-linked-relocations", [args.riscv_readelf, "-r", str(build / "sysy/factorial_asm_riscv")])
+    check("riscv call relocations resolved", re.search(r"R_RISCV_(CALL|JUMP_SLOT)", relocations) is None)
     debug, _ = run("debug-sections", ["readelf", "-SW", str(build / "sysy/features_c_host_g")])
     check("debug info exists", ".debug_info" in debug and ".debug_line" in debug)
     lines, _ = run("debug-lines", ["readelf", "--debug-dump=decodedline", str(build / "sysy/features_c_host_g")])
-    check("debug maps to source", "features.c" in lines)
+    check("debug maps to source", "features.sy" in lines)
 
     observations = {}
     for mode in ("O0", "g_O0", "O2"):

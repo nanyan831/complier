@@ -7,19 +7,19 @@
 ## 文件与运行
 
 ```text
-src/          SysY/C 示例、最小运行时和接口声明
+src/          SysY 示例、C 编译入口和运行库接口声明
 ir/           四个示例的手写 LLVM IR
-asm/          手写 RISC-V 程序和基线运行时
+asm/          四个示例的手写 RISC-V 程序
 experiments/  预处理、语法语义诊断、自动并行化的实验输入
-lib/          所给运行库源码、原始静态库与 SHA-256 校验值
+lib/          所给运行库源码、头文件与 SHA-256 校验值
 tests/        结果验证脚本
 Makefile      构建和验证入口
 README.md     要求核查、复现方法与报告撰写建议
 ```
 
-`.gitignore`、`.gitattributes` 是必要配置。`build/` 是本地生成物，不属于交付源码。旧报告及原课程材料移至仓库外保留，不作为当前实验报告。
+`.gitignore`、`.gitattributes` 是必要配置。`build/` 是本地生成物，不属于交付源码。`src/factorial.c`、`src/features.c` 仅引入接口头和对应 `.sy`，供 C 编译阶段观察使用，算法只维护一份。
 
-依赖 GCC、Clang、Python 3、strace、GCC OpenMP 运行时 libgomp、QEMU 用户态 `qemu-riscv64`、宿主 binutils、`riscv64-unknown-elf-{as,ld,readelf,nm,objdump}`，以及带目标 libc 的 `riscv64-linux-gnu-{gcc,ar}`。工具链正常安装后，在仓库根目录执行：
+依赖 GCC、Clang、Python 3、strace、GCC OpenMP 运行时 libgomp、QEMU 用户态 `qemu-riscv64`、宿主 binutils，以及带目标 libc 的 RISC-V Linux 工具链（`riscv64-linux-gnu-{gcc,ar,readelf,nm,objdump}`）。不再需要裸机工具链或原始预编译运行库。工具链正常安装后，在仓库根目录执行：
 
 ```bash
 make verify
@@ -38,7 +38,7 @@ make verify RISCV_SYSROOT="$TOOLCHAIN"
 
 ## 要求核查
 
-2026-10-09 重新核对用户提供的三页 PPT。第 2 页明确要求示例覆盖“各种数值运算，赋值、条件分支、循环等语句，函数，以及其他进阶特性”。因此不能因为没有单列进阶评分表，就把进阶特性排除在本次检查之外。
+依据 PPT 第 2 页，示例应覆盖数值运算、赋值、条件分支、循环、函数及其他进阶特性。
 
 按最新确认，仅完成本 PPT 的预备工作，不扩展到后续编译器任务。PPT 的“其他进阶特性”用一维/二维/三维数组、数组传参、浮点运算和类型转换示例落实；不声称穷尽全部 SysY 特性。总体文档中的通用编译器、张量类型及自有优化器不列为本次待完成项目，也不冒称已经实现。
 
@@ -51,16 +51,14 @@ make verify RISCV_SYSROOT="$TOOLCHAIN"
 | 进阶：一维数组 | 已有整数数组示例 | 源码、手写 IR 的 GEP、手写汇编元素访问及测试 |
 | 进阶示例：二维、三维数组 | 已实现并测试 | `arrays.sy`、手写 IR/汇编；数组形参、部分初始化补零、行优先寻址；24 组输入乘 6 条路线 |
 | 进阶示例：浮点常量、变量、存储和运算 | 已实现并测试 | `floating.sy`、手写 IR/汇编；浮点二维数组、函数传参、比较、四则运算、整数转换；30 组输入乘 6 条路线 |
-| 链接所给 SysY 运行库 | 源码重建路线通过；原 RISC-V 静态库直连未通过 | x86 原始库直接链接成功；RISC-V 从未修改的所给源码重建 Linux 库 |
+| 链接所给 SysY 运行库 | 已完成；用户已确认源码重建方案可用 | 宿主机、RISC-V 均从未修改的所给源码构建对应静态库，所有示例链接该库运行 |
 | 修改程序观察变化 | 已做所选对照 | 宏 MODE=0/1、诊断 CASE=0..5；不声称做过所有可能的程序变化 |
 | 调试、优化选项探索 | 已做所选对照 | 检查 -g、O0/O2 产物和运行；未做 GDB 单步、O1/O3 或性能计时 |
 | 自动并行化探索 | 已在宿主 x86-64 完成 | 无 OpenMP pragma；GCC 生成 GOMP_parallel；strace 确认 3 个工作线程；串行与并行结果一致，不冒充 RISC-V 并行实验 |
 | 两人各自完成流程、IR/汇编分工和备案 | 未核实 | 自动测试不能代替两人的真实独立实验记录 |
 | 完整论文结构、个人报告及 PDF 提交 | 未完成，按当前要求暂缓 | 此文件只是撰写建议，不是报告或可提交 PDF |
 
-结论：PPT 的程序实验部分已有代码、构建入口和运行验证，进阶示例及调试/优化/自动并行化探索已补充。仍不能说“整个作业已交付”：正式报告/PDF 按要求暂缓，两人独立实验及备案未核实，原 RISC-V 预编译库直连仍失败。所给源码重建成功与原始二进制直连是两种不同结论。
-
-总体文档后续模块中的词法/语法分析器、类型检查、通用 IR/汇编生成器、完整 mem2reg、不可达块清理、死代码删除以及自选优化器均未实现。调用 Clang -O2、查看 AST、手写 phi 均不能代替这些模块的实现。去年参考报告中的额外 ARM、malloc/free、全部优化级别计时，未在这份 PPT 中单独列为必做项；没有做的内容仍不能写为做过。
+PPT 程序实验已有代码与运行验证；正式报告/PDF 按要求暂缓，两人独立实验及备案需自行落实。不把本实验等同于实现通用 SysY 编译器。
 
 ## 实测结果和边界
 
@@ -68,15 +66,14 @@ make verify RISCV_SYSROOT="$TOOLCHAIN"
 
 | 测试 | 结果 | 范围 |
 | --- | --- | --- |
-| baseline | 39/39 | 阶乘 0..12，三种实现，自写最小运行时 |
-| sysy | 75/75 | 15 组输入、五种实现，所给库直连或源码重建 |
-| features | 78/78 | 13 组输入、六种实现 |
+| sysy | 75/75 | 阶乘 15 组输入、五种实现，均链接所给源码重建的运行库 |
+| features | 65/65 | 13 组输入、五种实现 |
 | options | 65/65 | 同样 13 组输入、五个调试/优化版本 |
 | compiler | 50/50 | 宏、阶段、诊断、重定位和调试信息等检查 |
 | advanced | 324/324 | 数组 24 组、浮点 30 组，各六条路线 |
 | parallel | 46/46 | 三个版本的结果、编译器并行化产物及实际线程创建检查 |
 
-baseline、sysy、features、options、advanced 合计 581 次程序结果检查。compiler 的 50 项和 parallel 的 46 项另计，后者包含 15 次串行/并行结果比较及跟踪运行，不把命令退出状态检查冒充独立算法用例。四份运行库文件 SHA-256 校验均通过。生成证据位于 `build/test-results/`，包含输入、stdout、stderr 和 results.tsv/results.json；编译器与并行化实验还有 commands.json、checks.json 等。
+sysy、features、options、advanced 合计 529 次程序结果检查。compiler 的 50 项和 parallel 的 46 项另计，后者包含 15 次串行/并行结果比较及跟踪运行。清理删除的是简化运行库的重复基线和同一源程序的重复构建，不减少输入用例或实验特性。两份原始运行库源码文件 SHA-256 校验均通过。生成证据位于 `build/test-results/`，包含输入、stdout、stderr 和 results.tsv/results.json；编译器与并行化实验还有 commands.json、checks.json 等。
 
 - 阶乘结论限于 `0 <= n <= 12`。手写 RV64 阶乘使用 64 位运算，不能据此声称其溢出行为等同于 C/IR 的 32 位整数。
 - 多特征程序最多读取三个整数；第二或第三个输入为 -99 时提前结束，范围外值贡献 1，只有 1..19 进入算术函数。负数输入测试没有检验负数参与除法、取余的行为。
@@ -101,7 +98,7 @@ baseline、sysy、features、options、advanced 合计 581 次程序结果检查
 
 ### 3. 预处理
 
-执行 `make stages`、`make test-compiler`。对照 C 文件与 `build/factorial.i` 解释 include 展开；比较 `experiments/preprocess.c` 与 compiler 证据中的 `preprocess-0.i`、`preprocess-1.i`。说明宏展开、条件编译、头文件保护、注释消失、字符串内的注释样式文字保留。两个模式分别输出 14 和 10。对应“预处理器做了什么”。
+执行 `make stages`、`make test-compiler`。C 入口引入 `.sy` 源码及接口头，对照 `build/factorial.i` 解释 include 展开；比较 `experiments/preprocess.c` 与 compiler 证据中的 `preprocess-0.i`、`preprocess-1.i`。说明宏展开、条件编译、头文件保护、注释消失、字符串内的注释样式文字保留。两个模式分别输出 14 和 10。对应“预处理器做了什么”。
 
 ### 4. 词法、语法、语义与控制流
 
@@ -125,11 +122,11 @@ baseline、sysy、features、options、advanced 合计 581 次程序结果检查
 
 ### 9. SysY 运行库
 
-执行 `make sysy-inspect`。区分自写最小运行时、所给原始库、从所给源码重建的库。说明 putint 不输出换行、计时信息写 stderr，测试为何按字节比较 stdout。成功的 Linux 重建和链接命令见 Makefile 的 `sysy-riscv`；原 RISC-V 静态库直连失败单独说明，不可用重建成功替代它。对应运行库连接要求及链接依赖分析。
+执行 `make sysy-inspect`，校验所给源码并查看重建的 RISC-V 库的 ELF、ABI 和符号。说明 putint 不输出换行、计时信息写 stderr，测试为何按字节比较 stdout。构建命令见 Makefile：宿主机使用 GCC 和 ar，RISC-V 使用 Linux 交叉工具链及 rv64gc/lp64d；所有静态库生成到 build/sysy。报告写“从所给运行库源码构建并链接”，不写“直接链接原始预编译库”。对应运行库连接要求及链接依赖分析。
 
 ### 10. 调试、优化与修改程序
 
-执行 `make test-options`、`make test-compiler`。比较 O0、-g O0、O2 的 IR，并结合 `ir-observations.json` 定位具体变化；本次 alloca 数分别为 8、8、0，phi 为 0、0、3，调试版有 88 个 `!dbg` 出现位置。解释 debug 行映射以及优化前后为何仍须验证结果。计数不能证明性能提升。宏和诊断输入是程序变化对照。对应 PPT 鼓励探索。
+执行 `make test-options`、`make test-compiler`。比较 O0、-g O0、O2 的 IR，并结合 `ir-observations.json` 定位 alloca、phi 和调试位置的变化。C 入口引用 `.sy`，调试信息应映射到实际算法所在的 features.sy。解释优化前后为何仍须验证结果，计数不能证明性能提升。宏和诊断输入是程序变化对照。对应 PPT 鼓励探索。
 
 ### 11. 多维数组进阶示例
 
@@ -155,16 +152,6 @@ baseline、sysy、features、options、advanced 合计 581 次程序结果检查
 
 按 PPT 写题目、摘要、关键词、引言、工作和结果、结论及参考文献，最后附步骤与要求对应表。两人共同定框架，再各写独立实验和分工部分，分别提交 PDF。当前仅保留建议，不生成报告、不声称 PDF 已完成；正式撰写时再核对模板与参考资料。
 
-## 运行库来源与复查
+## 运行库来源
 
-四份原始文件来自用户提供的 `lib.tar.gz`，未修改。原压缩包 SHA-256 为 `d6fd112ecb6d318e4cb2ea377aa0770cb8b9736c3d024fde4a9300ac2058a0ac`，逐文件校验用 `sha256sum -c lib/SHA256SUMS`。压缩包未附许可证说明，不根据文件名推断官方来源。
-
-原 RISC-V 库有 `_impure_ptr` 未解析依赖；裸机工具链缺少 crt0.o、libc、libgloss，Linux/glibc 链接仍报 `_impure_ptr` 未定义。保留原库用于复查，成功路线使用的是 `build/sysy/libsysy_riscv_linux.a`，不是原始二进制库。
-
-```bash
-mkdir -p build
-riscv64-unknown-elf-gcc -march=rv64gc -mabi=lp64d src/factorial.c lib/libsysy_riscv.a -o build/original-bare
-riscv64-linux-gnu-gcc --sysroot="$TOOLCHAIN" -march=rv64gc -mabi=lp64d -static src/factorial.c lib/libsysy_riscv.a -o build/original-linux
-```
-
-这两条命令在当前环境预期失败，不纳入通过项。系统安装 Linux 工具链时去掉第二条的 sysroot 参数。`lib/sylib.h` 含计时全局变量定义，主程序用 `src/sysy_runtime.h` 的薄声明避免重复定义，不因此链接自写运行时实现。
+`lib/sylib.c`、`lib/sylib.h` 来自用户提供的 `lib.tar.gz`，内容未修改，使用 `sha256sum -c lib/SHA256SUMS` 校验。源码重建方案已由用户确认可用，仓库不保留原预编译库和失败路线。`lib/sylib.h` 含计时全局变量定义，主程序用 `src/sysy_runtime.h` 的薄声明避免重复定义；该头文件没有运行库实现。

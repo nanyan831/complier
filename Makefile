@@ -1,10 +1,9 @@
 CC := gcc
 CLANG := clang
-RISCV_AS := riscv64-unknown-elf-as
-RISCV_LD := riscv64-unknown-elf-ld
-RISCV_READELF := riscv64-unknown-elf-readelf
-RISCV_NM := riscv64-unknown-elf-nm
-RISCV_OBJDUMP := riscv64-unknown-elf-objdump
+AR := ar
+RISCV_READELF := riscv64-linux-gnu-readelf
+RISCV_NM := riscv64-linux-gnu-nm
+RISCV_OBJDUMP := riscv64-linux-gnu-objdump
 QEMU := qemu-riscv64
 PYTHON := python3
 RISCV_CC ?= riscv64-linux-gnu-gcc
@@ -16,10 +15,10 @@ RISCV_FLAGS += --sysroot=$(RISCV_SYSROOT)
 endif
 BUILD := build
 
-.PHONY: all stages c ir riscv test analysis sysy sysy-host sysy-riscv sysy-inspect test-sysy test-sysy-host test-sysy-riscv features-host features-riscv test-features clean
+.PHONY: all stages test analysis sysy sysy-host sysy-riscv sysy-inspect test-sysy test-sysy-host test-sysy-riscv features-host features-riscv test-features clean
 .PHONY: options test-options test-compiler advanced test-advanced test-parallel verify
 
-all: stages c ir riscv
+all: stages sysy
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -45,28 +44,20 @@ analysis: | $(BUILD)
 	$(CC) -S -O0 -I src src/features.c -o $(BUILD)/features_gcc_O0.s
 	$(CC) -c -O0 -I src src/features.c -o $(BUILD)/features.o
 
-c: | $(BUILD)
-	$(CC) -O0 src/factorial.c src/sysy_runtime.c -o $(BUILD)/factorial_c
-
-ir: | $(BUILD)
-	$(CLANG) ir/factorial_manual.ll src/sysy_runtime.c -o $(BUILD)/factorial_ir
-
-riscv: | $(BUILD)
-	$(RISCV_AS) -march=rv64gc -mabi=lp64 -mno-relax asm/factorial_riscv64.s -o $(BUILD)/factorial_riscv64.o
-	$(RISCV_AS) -march=rv64gc -mabi=lp64 -mno-relax asm/sysy_runtime_riscv64.s -o $(BUILD)/sysy_runtime_riscv64.o
-	$(RISCV_LD) --no-relax $(BUILD)/factorial_riscv64.o $(BUILD)/sysy_runtime_riscv64.o -o $(BUILD)/factorial_riscv64
-
-test: all
-	$(PYTHON) tests/check_factorial.py baseline --build $(BUILD) --qemu $(QEMU)
+test: verify
 
 $(BUILD)/sysy:
 	mkdir -p $(BUILD)/sysy
 
 sysy: sysy-host sysy-riscv
 
-sysy-host: | $(BUILD)/sysy
-	$(CC) -O0 src/factorial.c lib/libsysy_x86.a -o $(BUILD)/sysy/factorial_c_host
-	$(CLANG) ir/factorial_manual.ll lib/libsysy_x86.a -o $(BUILD)/sysy/factorial_ir_host
+$(BUILD)/sysy/libsysy_host.a: lib/sylib.c lib/sylib.h | $(BUILD)/sysy
+	$(CC) -O0 -c lib/sylib.c -o $(BUILD)/sysy/sylib_host.o
+	$(AR) rcs $@ $(BUILD)/sysy/sylib_host.o
+
+sysy-host: $(BUILD)/sysy/libsysy_host.a
+	$(CC) -O0 src/factorial.c $(BUILD)/sysy/libsysy_host.a -o $(BUILD)/sysy/factorial_c_host
+	$(CLANG) ir/factorial_manual.ll $(BUILD)/sysy/libsysy_host.a -o $(BUILD)/sysy/factorial_ir_host
 
 sysy-riscv: | $(BUILD)/sysy
 	$(RISCV_CC) $(RISCV_FLAGS) -O0 -c lib/sylib.c -o $(BUILD)/sysy/sylib_riscv_linux.o
@@ -74,12 +65,13 @@ sysy-riscv: | $(BUILD)/sysy
 	$(RISCV_CC) $(RISCV_FLAGS) -static -O0 src/factorial.c $(BUILD)/sysy/libsysy_riscv_linux.a -o $(BUILD)/sysy/factorial_c_riscv
 	$(CLANG) --target=riscv64-linux-gnu -march=rv64gc -mabi=lp64d -c ir/factorial_manual.ll -o $(BUILD)/sysy/factorial_ir_riscv.o
 	$(RISCV_CC) $(RISCV_FLAGS) -static $(BUILD)/sysy/factorial_ir_riscv.o $(BUILD)/sysy/libsysy_riscv_linux.a -o $(BUILD)/sysy/factorial_ir_riscv
-	$(RISCV_CC) $(RISCV_FLAGS) -static asm/factorial_riscv64.s $(BUILD)/sysy/libsysy_riscv_linux.a -o $(BUILD)/sysy/factorial_asm_riscv
+	$(RISCV_CC) $(RISCV_FLAGS) -c asm/factorial_riscv64.s -o $(BUILD)/sysy/factorial_asm_riscv.o
+	$(RISCV_CC) $(RISCV_FLAGS) -static $(BUILD)/sysy/factorial_asm_riscv.o $(BUILD)/sysy/libsysy_riscv_linux.a -o $(BUILD)/sysy/factorial_asm_riscv
 
-sysy-inspect: | $(BUILD)/sysy
+sysy-inspect: sysy-riscv
 	sha256sum -c lib/SHA256SUMS
-	$(RISCV_READELF) -h -A lib/libsysy_riscv.a > $(BUILD)/sysy/archive-elf.txt
-	$(RISCV_NM) -g lib/libsysy_riscv.a > $(BUILD)/sysy/archive-symbols.txt
+	$(RISCV_READELF) -h -A $(BUILD)/sysy/libsysy_riscv_linux.a > $(BUILD)/sysy/archive-elf.txt
+	$(RISCV_NM) -g $(BUILD)/sysy/libsysy_riscv_linux.a > $(BUILD)/sysy/archive-symbols.txt
 
 test-sysy: sysy
 	$(PYTHON) tests/check_factorial.py sysy --build $(BUILD) --qemu $(QEMU)
@@ -90,11 +82,9 @@ test-sysy-host: sysy-host
 test-sysy-riscv: sysy-riscv
 	$(PYTHON) tests/check_factorial.py sysy-riscv --build $(BUILD) --qemu $(QEMU)
 
-features-host: | $(BUILD)/sysy
-	$(CC) -O0 src/features.c lib/libsysy_x86.a -o $(BUILD)/sysy/features_c_host
-	$(CLANG) -x c -include src/sysy_runtime.h -c src/features.sy -o $(BUILD)/sysy/features_sy_host.o
-	$(CLANG) $(BUILD)/sysy/features_sy_host.o lib/libsysy_x86.a -o $(BUILD)/sysy/features_sy_host
-	$(CLANG) ir/features_manual.ll lib/libsysy_x86.a -o $(BUILD)/sysy/features_ir_host
+features-host: $(BUILD)/sysy/libsysy_host.a
+	$(CC) -O0 src/features.c $(BUILD)/sysy/libsysy_host.a -o $(BUILD)/sysy/features_c_host
+	$(CLANG) ir/features_manual.ll $(BUILD)/sysy/libsysy_host.a -o $(BUILD)/sysy/features_ir_host
 
 features-riscv: sysy-riscv
 	$(RISCV_CC) $(RISCV_FLAGS) -static -O0 src/features.c $(BUILD)/sysy/libsysy_riscv_linux.a -o $(BUILD)/sysy/features_c_riscv
@@ -105,10 +95,10 @@ features-riscv: sysy-riscv
 test-features: features-host features-riscv
 	$(PYTHON) tests/check_features.py --build $(BUILD) --qemu $(QEMU)
 
-options: sysy-riscv
-	$(CLANG) -O2 src/features.c lib/libsysy_x86.a -o $(BUILD)/sysy/features_c_host_O2
-	$(CLANG) -g -O0 src/features.c lib/libsysy_x86.a -o $(BUILD)/sysy/features_c_host_g
-	$(CLANG) -O2 ir/features_manual.ll lib/libsysy_x86.a -o $(BUILD)/sysy/features_ir_host_O2
+options: sysy-riscv $(BUILD)/sysy/libsysy_host.a
+	$(CLANG) -O2 src/features.c $(BUILD)/sysy/libsysy_host.a -o $(BUILD)/sysy/features_c_host_O2
+	$(CLANG) -g -O0 src/features.c $(BUILD)/sysy/libsysy_host.a -o $(BUILD)/sysy/features_c_host_g
+	$(CLANG) -O2 ir/features_manual.ll $(BUILD)/sysy/libsysy_host.a -o $(BUILD)/sysy/features_ir_host_O2
 	$(RISCV_CC) $(RISCV_FLAGS) -static -O2 src/features.c $(BUILD)/sysy/libsysy_riscv_linux.a -o $(BUILD)/sysy/features_c_riscv_O2
 	$(CLANG) --target=riscv64-linux-gnu -march=rv64gc -mabi=lp64d -O2 -c ir/features_manual.ll -o $(BUILD)/sysy/features_ir_riscv_O2.o
 	$(RISCV_CC) $(RISCV_FLAGS) -static $(BUILD)/sysy/features_ir_riscv_O2.o $(BUILD)/sysy/libsysy_riscv_linux.a -o $(BUILD)/sysy/features_ir_riscv_O2
@@ -116,21 +106,21 @@ options: sysy-riscv
 test-options: options
 	$(PYTHON) tests/check_features.py --suite options --build $(BUILD) --qemu $(QEMU)
 
-test-compiler: stages c riscv analysis options
+test-compiler: stages sysy analysis options
 	$(PYTHON) tests/check_compiler.py --build $(BUILD) --cc $(CC) --clang $(CLANG) --riscv-objdump $(RISCV_OBJDUMP) --riscv-readelf $(RISCV_READELF)
 
 ADVANCED := arrays floating
 ADVANCED_ROUTES := sy_host ir_host sy_riscv ir_riscv asm_riscv sy_host_O2
 advanced: sysy-riscv $(foreach sample,$(ADVANCED),$(foreach route,$(ADVANCED_ROUTES),$(BUILD)/sysy/$(sample)_$(route))) $(foreach sample,$(ADVANCED),$(BUILD)/$(sample)_clang_O0.ll $(BUILD)/$(sample)_clang_O2.ll)
 
-$(BUILD)/sysy/%_sy_host: src/%.sy src/sysy_runtime.h lib/libsysy_x86.a | $(BUILD)/sysy
-	$(CLANG) -O0 -ffp-contract=off -include src/sysy_runtime.h -x c $< -x none lib/libsysy_x86.a -o $@
+$(BUILD)/sysy/%_sy_host: src/%.sy src/sysy_runtime.h $(BUILD)/sysy/libsysy_host.a | $(BUILD)/sysy
+	$(CLANG) -O0 -ffp-contract=off -include src/sysy_runtime.h -x c $< -x none $(BUILD)/sysy/libsysy_host.a -o $@
 
-$(BUILD)/sysy/%_sy_host_O2: src/%.sy src/sysy_runtime.h lib/libsysy_x86.a | $(BUILD)/sysy
-	$(CLANG) -O2 -ffp-contract=off -include src/sysy_runtime.h -x c $< -x none lib/libsysy_x86.a -o $@
+$(BUILD)/sysy/%_sy_host_O2: src/%.sy src/sysy_runtime.h $(BUILD)/sysy/libsysy_host.a | $(BUILD)/sysy
+	$(CLANG) -O2 -ffp-contract=off -include src/sysy_runtime.h -x c $< -x none $(BUILD)/sysy/libsysy_host.a -o $@
 
-$(BUILD)/sysy/%_ir_host: ir/%_manual.ll lib/libsysy_x86.a | $(BUILD)/sysy
-	$(CLANG) $< lib/libsysy_x86.a -o $@
+$(BUILD)/sysy/%_ir_host: ir/%_manual.ll $(BUILD)/sysy/libsysy_host.a | $(BUILD)/sysy
+	$(CLANG) $< $(BUILD)/sysy/libsysy_host.a -o $@
 
 $(BUILD)/sysy/%_sy_riscv: src/%.sy src/sysy_runtime.h sysy-riscv
 	$(RISCV_CC) $(RISCV_FLAGS) -O0 -ffp-contract=off -static -include src/sysy_runtime.h -x c $< -x none $(BUILD)/sysy/libsysy_riscv_linux.a -o $@
@@ -154,7 +144,7 @@ test-advanced: advanced
 test-parallel: | $(BUILD)
 	$(PYTHON) tests/check_parallel.py --build $(BUILD) --cc $(CC)
 
-verify: test test-sysy test-features test-options test-compiler sysy-inspect test-advanced test-parallel
+verify: test-sysy test-features test-options test-compiler sysy-inspect test-advanced test-parallel
 
 clean:
 	rm -rf $(BUILD)

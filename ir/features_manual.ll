@@ -8,7 +8,8 @@ entry:
   %half = sdiv i32 %x, 2
   %base = sub nsw i32 %b, %half
   %rem = srem i32 %x, 2
-  %even = icmp eq i32 %rem, 0
+  %odd = icmp ne i32 %rem, 0
+  %even = xor i1 %odd, true
   br i1 %even, label %even_path, label %odd_path
 
 even_path:
@@ -40,12 +41,20 @@ body:
   %slot = getelementptr inbounds [3 x i32], ptr %data, i32 0, i32 %i
   store i32 %input, ptr %slot, align 4
   %value = load i32, ptr %slot, align 4
-  %positive = icmp sgt i32 %value, 0
-  br i1 %positive, label %upper_check, label %fallback
+  %marker = icmp eq i32 %value, -99
+  br i1 %marker, label %marker_check, label %lower_check
+
+marker_check:
+  %not_first = icmp sgt i32 %i, 0
+  br i1 %not_first, label %exit, label %lower_check
+
+lower_check:
+  %nonpositive = icmp sle i32 %value, 0
+  br i1 %nonpositive, label %fallback, label %upper_check
 
 upper_check:
-  %small = icmp slt i32 %value, 20
-  br i1 %small, label %accepted, label %fallback
+  %too_large = icmp sge i32 %value, 20
+  br i1 %too_large, label %fallback, label %accepted
 
 accepted:
   %changed = call i32 @transform(i32 %value)

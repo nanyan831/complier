@@ -12,22 +12,37 @@ def transform(value):
 
 
 def expected(values):
-    return sum(transform(value) if 0 < value < 20 else 1 for value in values)
+    total = 0
+    for index, value in enumerate(values):
+        if value == -99 and index > 0:
+            break
+        total += transform(value) if 0 < value < 20 else 1
+    return total
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", type=Path, default=Path("build"))
     parser.add_argument("--qemu", default="qemu-riscv64")
+    parser.add_argument("--suite", choices=("features", "options"), default="features")
     args = parser.parse_args()
     directory = args.build.resolve() / "sysy"
     programs = [
         ("C-host", [str(directory / "features_c_host")]),
+        ("SysY-as-C-host", [str(directory / "features_sy_host")]),
         ("IR-host", [str(directory / "features_ir_host")]),
         ("C-RV", [args.qemu, str(directory / "features_c_riscv")]),
         ("IR-RV", [args.qemu, str(directory / "features_ir_riscv")]),
         ("ASM-RV", [args.qemu, str(directory / "features_asm_riscv")]),
     ]
+    if args.suite == "options":
+        programs = [
+            ("C-host-O2", [str(directory / "features_c_host_O2")]),
+            ("C-host-g", [str(directory / "features_c_host_g")]),
+            ("IR-host-O2", [str(directory / "features_ir_host_O2")]),
+            ("C-RV-O2", [args.qemu, str(directory / "features_c_riscv_O2")]),
+            ("IR-RV-O2", [args.qemu, str(directory / "features_ir_riscv_O2")]),
+        ]
     cases = [
         (0, 0, 0),
         (2, 3, 4),
@@ -37,8 +52,13 @@ def main():
         (1, 2, 19),
         (20, 21, 22),
         (-1, 0, 1),
+        (2, -99),
+        (2, 3, -99),
+        (-99, 2, 3),
+        (-2147483648, 2147483647, 19),
+        (-1, 2, -99),
     ]
-    evidence = args.build.resolve() / "test-results" / "features"
+    evidence = args.build.resolve() / "test-results" / args.suite
     evidence.mkdir(parents=True, exist_ok=True)
     failures = 0
     with (evidence / "results.tsv").open("w", encoding="utf-8") as summary:
@@ -68,7 +88,7 @@ def main():
                     print(f"FAIL case{index}/{name}: exit={code}, expected={output_bytes!r}, actual={actual!r}")
                     print(f"  stderr: {stderr[:1000]!r}")
     total = len(cases) * len(programs)
-    print(f"features: {total - failures}/{total} PASS; evidence: {evidence}")
+    print(f"{args.suite}: {total - failures}/{total} PASS; evidence: {evidence}")
     return 1 if failures else 0
 
 

@@ -1,0 +1,26 @@
+float blend(float x, float y, int scale) {
+    const float factor = 1.5;
+    const float divisor = 2.0;
+    const float quarter = 0.25;
+    float shifted = x * factor + y / divisor;
+    if (shifted < 0.0) {
+        return -shifted + scale;
+    } else {
+        return shifted - quarter;
+    }
+}
+
+int main() {
+    int scale = getint();
+    float x = getfloat();
+    float y = getfloat();
+    float values[2][2] = {{0.5}, {-1.0, 2.0}};
+    values[0][1] = blend(x, y, scale);
+    float result = values[0][1] + values[1][0] * values[1][1];
+    int truncated = result;
+    putfloat(result);
+    putch(32);
+    putint(truncated);
+    putch(10);
+    return 0;
+}

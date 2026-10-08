@@ -1,0 +1,42 @@
+int bias[2][3] = {{1, 2}, {3}};
+
+int weighted_sum(int volume[][2][3], int weights[][3]) {
+    int k = 0;
+    int sum = 0;
+    while (k < 2) {
+        int i = 0;
+        while (i < 2) {
+            int j = 0;
+            while (j < 3) {
+                sum = sum + volume[k][i][j] * (k * 6 + i * 3 + j + 1)
+                    + weights[i][j];
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        k = k + 1;
+    }
+    return sum;
+}
+
+int main() {
+    int volume[2][2][3];
+    int k = 0;
+    while (k < 2) {
+        int i = 0;
+        while (i < 2) {
+            int j = 0;
+            while (j < 3) {
+                volume[k][i][j] = getint();
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        k = k + 1;
+    }
+    putint(weighted_sum(volume, bias));
+    putch(32);
+    putint(volume[1][1][2]);
+    putch(10);
+    return 0;
+}

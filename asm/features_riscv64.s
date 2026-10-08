@@ -33,6 +33,10 @@ main:
     add t0, sp, t0
     sw a0, 0(t0)
     lw a0, 0(t0)
+    li t0, -99
+    bne a0, t0, .Lrange
+    bgtz s0, .Lexit
+.Lrange:
     blez a0, .Lfallback
     li t0, 20
     bge a0, t0, .Lfallback

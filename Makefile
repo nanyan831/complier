@@ -4,6 +4,7 @@ RISCV_AS := riscv64-unknown-elf-as
 RISCV_LD := riscv64-unknown-elf-ld
 RISCV_READELF := riscv64-unknown-elf-readelf
 RISCV_NM := riscv64-unknown-elf-nm
+RISCV_OBJDUMP := riscv64-unknown-elf-objdump
 QEMU := qemu-riscv64
 PYTHON := python3
 RISCV_CC ?= riscv64-linux-gnu-gcc
@@ -16,6 +17,7 @@ endif
 BUILD := build
 
 .PHONY: all stages c ir riscv test analysis sysy sysy-host sysy-riscv sysy-inspect test-sysy test-sysy-host test-sysy-riscv features-host features-riscv test-features clean
+.PHONY: options test-options test-compiler advanced test-advanced test-parallel verify
 
 all: stages c ir riscv
 
@@ -37,6 +39,7 @@ analysis: | $(BUILD)
 	$(CLANG) -fsyntax-only -I src -Xclang -ast-dump src/features.c > $(BUILD)/features.ast.txt
 	$(CLANG) --analyze -I src -Xclang -analyzer-checker=debug.DumpCFG src/features.c -o $(BUILD)/features.plist 2> $(BUILD)/features.cfg.txt
 	$(CLANG) -S -emit-llvm -O0 -I src src/features.c -o $(BUILD)/features_clang_O0.ll
+	$(CLANG) -S -emit-llvm -g -O0 -I src src/features.c -o $(BUILD)/features_clang_g_O0.ll
 	$(CLANG) -S -emit-llvm -O2 -I src src/features.c -o $(BUILD)/features_clang_O2.ll
 	$(CLANG) --target=riscv64-unknown-elf -S -O0 -I src src/features.c -o $(BUILD)/features_clang_riscv64_O0.s
 	$(CC) -S -O0 -I src src/features.c -o $(BUILD)/features_gcc_O0.s
@@ -89,6 +92,8 @@ test-sysy-riscv: sysy-riscv
 
 features-host: | $(BUILD)/sysy
 	$(CC) -O0 src/features.c lib/libsysy_x86.a -o $(BUILD)/sysy/features_c_host
+	$(CLANG) -x c -include src/sysy_runtime.h -c src/features.sy -o $(BUILD)/sysy/features_sy_host.o
+	$(CLANG) $(BUILD)/sysy/features_sy_host.o lib/libsysy_x86.a -o $(BUILD)/sysy/features_sy_host
 	$(CLANG) ir/features_manual.ll lib/libsysy_x86.a -o $(BUILD)/sysy/features_ir_host
 
 features-riscv: sysy-riscv
@@ -99,6 +104,57 @@ features-riscv: sysy-riscv
 
 test-features: features-host features-riscv
 	$(PYTHON) tests/check_features.py --build $(BUILD) --qemu $(QEMU)
+
+options: sysy-riscv
+	$(CLANG) -O2 src/features.c lib/libsysy_x86.a -o $(BUILD)/sysy/features_c_host_O2
+	$(CLANG) -g -O0 src/features.c lib/libsysy_x86.a -o $(BUILD)/sysy/features_c_host_g
+	$(CLANG) -O2 ir/features_manual.ll lib/libsysy_x86.a -o $(BUILD)/sysy/features_ir_host_O2
+	$(RISCV_CC) $(RISCV_FLAGS) -static -O2 src/features.c $(BUILD)/sysy/libsysy_riscv_linux.a -o $(BUILD)/sysy/features_c_riscv_O2
+	$(CLANG) --target=riscv64-linux-gnu -march=rv64gc -mabi=lp64d -O2 -c ir/features_manual.ll -o $(BUILD)/sysy/features_ir_riscv_O2.o
+	$(RISCV_CC) $(RISCV_FLAGS) -static $(BUILD)/sysy/features_ir_riscv_O2.o $(BUILD)/sysy/libsysy_riscv_linux.a -o $(BUILD)/sysy/features_ir_riscv_O2
+
+test-options: options
+	$(PYTHON) tests/check_features.py --suite options --build $(BUILD) --qemu $(QEMU)
+
+test-compiler: stages c riscv analysis options
+	$(PYTHON) tests/check_compiler.py --build $(BUILD) --cc $(CC) --clang $(CLANG) --riscv-objdump $(RISCV_OBJDUMP) --riscv-readelf $(RISCV_READELF)
+
+ADVANCED := arrays floating
+ADVANCED_ROUTES := sy_host ir_host sy_riscv ir_riscv asm_riscv sy_host_O2
+advanced: sysy-riscv $(foreach sample,$(ADVANCED),$(foreach route,$(ADVANCED_ROUTES),$(BUILD)/sysy/$(sample)_$(route))) $(foreach sample,$(ADVANCED),$(BUILD)/$(sample)_clang_O0.ll $(BUILD)/$(sample)_clang_O2.ll)
+
+$(BUILD)/sysy/%_sy_host: src/%.sy src/sysy_runtime.h lib/libsysy_x86.a | $(BUILD)/sysy
+	$(CLANG) -O0 -ffp-contract=off -include src/sysy_runtime.h -x c $< -x none lib/libsysy_x86.a -o $@
+
+$(BUILD)/sysy/%_sy_host_O2: src/%.sy src/sysy_runtime.h lib/libsysy_x86.a | $(BUILD)/sysy
+	$(CLANG) -O2 -ffp-contract=off -include src/sysy_runtime.h -x c $< -x none lib/libsysy_x86.a -o $@
+
+$(BUILD)/sysy/%_ir_host: ir/%_manual.ll lib/libsysy_x86.a | $(BUILD)/sysy
+	$(CLANG) $< lib/libsysy_x86.a -o $@
+
+$(BUILD)/sysy/%_sy_riscv: src/%.sy src/sysy_runtime.h sysy-riscv
+	$(RISCV_CC) $(RISCV_FLAGS) -O0 -ffp-contract=off -static -include src/sysy_runtime.h -x c $< -x none $(BUILD)/sysy/libsysy_riscv_linux.a -o $@
+
+$(BUILD)/sysy/%_ir_riscv: ir/%_manual.ll sysy-riscv
+	$(CLANG) --target=riscv64-linux-gnu -march=rv64gc -mabi=lp64d -c $< -o $@.o
+	$(RISCV_CC) $(RISCV_FLAGS) -static $@.o $(BUILD)/sysy/libsysy_riscv_linux.a -o $@
+
+$(BUILD)/sysy/%_asm_riscv: asm/%_riscv64.s sysy-riscv
+	$(RISCV_CC) $(RISCV_FLAGS) -static $< $(BUILD)/sysy/libsysy_riscv_linux.a -o $@
+
+$(BUILD)/%_clang_O0.ll: src/%.sy src/sysy_runtime.h | $(BUILD)
+	$(CLANG) -O0 -ffp-contract=off -S -emit-llvm -include src/sysy_runtime.h -x c $< -o $@
+
+$(BUILD)/%_clang_O2.ll: src/%.sy src/sysy_runtime.h | $(BUILD)
+	$(CLANG) -O2 -ffp-contract=off -S -emit-llvm -include src/sysy_runtime.h -x c $< -o $@
+
+test-advanced: advanced
+	$(PYTHON) tests/check_advanced.py --build $(BUILD) --qemu $(QEMU)
+
+test-parallel: | $(BUILD)
+	$(PYTHON) tests/check_parallel.py --build $(BUILD) --cc $(CC)
+
+verify: test test-sysy test-features test-options test-compiler sysy-inspect test-advanced test-parallel
 
 clean:
 	rm -rf $(BUILD)
